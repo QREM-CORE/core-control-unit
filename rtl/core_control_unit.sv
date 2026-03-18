@@ -28,10 +28,10 @@ module core_control_unit (
 );
 
     // Internal signals between Host IF and Main FSM
-    logic [1:0] op_mode;      // e.g., 00: Idle, 01: KeyGen, 10: Encaps, 11: Decaps
-    logic [1:0] security_lvl; // e.g., k=2, k=3, k=4
-    logic       start_cmd;
-    logic       done_status;
+    // logic [1:0] op_mode;      // e.g., 00: Idle, 01: KeyGen, 10: Encaps, 11: Decaps
+    // logic [1:0] security_lvl; // e.g., k=2, k=3, k=4
+    // logic       start_cmd;
+    // logic       done_status;
 
     // Instantiate Host Interface
     host_if u_host_if (
