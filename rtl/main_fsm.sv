@@ -10,8 +10,11 @@
  * Acts as the primary orchestrator for the Hash, PAU, Transcoder, and Memory.
  */
 
- module host_if(
-    input  logic clk,
-    input  logic rst_n,
- )
- endmodule
+import core_ctrl_pkg::*;
+
+module main_fsm (
+    input logic clk,
+    input logic rst_n
+    // TODO: Add control interfaces
+);
+endmodule

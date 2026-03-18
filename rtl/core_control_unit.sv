@@ -36,7 +36,7 @@ module core_control_unit (
     // Instantiate Host Interface
     host_if u_host_if (
         .clk(clk),
-        .rst_n(rst_n)
+        .rst_n(rst_n),
         // ... port maps ...
     );
 

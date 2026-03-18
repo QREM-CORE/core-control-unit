@@ -10,8 +10,9 @@
  * Acts as the primary orchestrator for the Hash, PAU, Transcoder, and Memory.
  */
 
- module host_if(
-    input  logic clk,
-    input  logic rst_n,
- )
- endmodule
+module host_if (
+    input logic clk,
+    input logic rst_n
+    // TODO: Add actual AXI/APB ports later
+);
+endmodule
