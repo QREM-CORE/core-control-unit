@@ -15,7 +15,7 @@ import core_ctrl_pkg::*;
 
 module core_control_unit (
     input  logic clk,
-    input  logic rst_n,
+    input  logic rst_n
 
     // Host Interface (e.g., AXI-Lite or Custom)
     // TODO: Define host interface ports
@@ -36,7 +36,7 @@ module core_control_unit (
     // Instantiate Host Interface
     host_if u_host_if (
         .clk(clk),
-        .rst_n(rst_n),
+        .rst_n(rst_n)
         // ... port maps ...
     );
 
