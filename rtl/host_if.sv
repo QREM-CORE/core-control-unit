@@ -67,7 +67,7 @@ module host_if (
     output logic [3:0]   cmd_xfer_op_o,  // LD_EK, ST_C, etc.
     output logic [1:0]   cmd_sec_lvl_o,  // 00, 01, 10
     output logic [15:0]  cmd_xfer_len_o, // Byte count
-    
+
     // Priority Control
     output logic         cmd_zeroize_o,  // Direct pulse, bypasses handshake
 
@@ -94,7 +94,7 @@ module host_if (
     input  logic         tc_tx_tlast_i
 );
 
-    // TODO: Register file logic, Pulse generation for cmd_valid_o, 
+    // TODO: Register file logic, Pulse generation for cmd_valid_o,
     // and Stream gating logic based on cmd_xfer_op_o.
 
 endmodule
