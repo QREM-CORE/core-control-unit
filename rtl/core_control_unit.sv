@@ -5,13 +5,13 @@
  *
  * Reference: QREM Architecture Specification
  *
- * Description: Top-level wrapper for the control subsystem. 
+ * Description: Top-level wrapper for the control subsystem.
  * Instantiates the host interface (CSRs) and the main protocol FSM.
  * Acts as the primary orchestrator for the Hash, PAU, Transcoder, and Memory.
  */
 
+import qrem_global_pkg::*;
 import core_ctrl_pkg::*;
-// import common_pkg::*; // Assuming you have this in common-rtl
 
 module core_control_unit (
     input  logic clk,
@@ -19,7 +19,7 @@ module core_control_unit (
 
     // Host Interface (e.g., AXI-Lite or Custom)
     // TODO: Define host interface ports
-    
+
     // Subsystem Command Interfaces (Ready/Valid)
     // TODO: PAU interface
     // TODO: Hash/Sampler interface
