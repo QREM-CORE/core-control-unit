@@ -10,3 +10,4 @@ build.f
 *.do
 *.dovlog
 obj_dir/
+sim_tb
