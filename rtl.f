@@ -5,7 +5,6 @@
 rtl/core_ctrl_pkg.sv
 
 # 3. Local RTL (i.e., rtl/transcoder_unit.sv)
-rtl/main_fsm.sv
 rtl/host_if.sv
 
 # 4. Top Level
