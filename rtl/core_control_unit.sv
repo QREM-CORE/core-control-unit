@@ -23,7 +23,7 @@ import core_ctrl_pkg::*;
 
 module core_control_unit (
     input  logic                         clk,
-    input  logic                         rst_n,
+    input  logic                         rst,
 
     // ---------------------------------------------------------------------
     // Latched high-level command input from host_if
@@ -127,6 +127,10 @@ module core_control_unit (
 
     // Latched command context from host_if. Live CSR changes in host_if cannot
     // mutate these fields while a command is in flight.
+    //
+    // Security-level must be accepted and latched once per operation start.
+    // All KeyGen sequencing derives k from this latched value (via kg_fsm),
+    // never from a live CSR that could change mid-operation.
     logic [3:0]  cmd_opcode_lat_r;
     logic [3:0]  cmd_mode_lat_r;
     logic [1:0]  cmd_sec_lvl_lat_r;
@@ -276,6 +280,12 @@ module core_control_unit (
 
             unique case (mode)
                 MODE_KEYGEN: begin
+                    // Blocked-by-external-repo: KeyGen export/ingest opcodes
+                    // rely on the transcoder's internal view of poly/seed
+                    // locations matching the controller's slot map in
+                    // core_ctrl_pkg (S slots, T slots, rho/hek seed IDs).
+                    // The controller enforces k_active by scheduling; the
+                    // transcoder must not infer k implicitly.
                     unique case (payload_id)
                         PLD_DK:  decode_store_tr_opcode = TR_OP_KG_EXPORT_DK_PKE;
                         PLD_EK:  decode_store_tr_opcode = TR_OP_KG_EXPORT_EK_PKE_1;
@@ -489,13 +499,42 @@ module core_control_unit (
 
                     if (tr_done_i) begin
                         if ((cmd_mode_lat_r == MODE_KEYGEN) &&
-                            (cmd_payload_id_lat_r == PLD_EK) &&
-                            (active_tr_opcode_r == TR_OP_KG_EXPORT_EK_PKE_1)) begin
-                            // Current transcoder exposes EK as t_hat and rho
-                            // sub-ops. This keeps the controller architecture
-                            // correct, but a future transcoder opcode should
-                            // suppress the intermediate TLAST for a single
-                            // host PLD_EK store transaction.
+                            (cmd_payload_id_lat_r == PLD_DK)) begin
+                            // Locked KeyGen: PLD_DK is dk_partial (no z):
+                            //   dk_partial = ByteEncode12(s_hat[0..k-1]) || ek || H(ek)
+                            // with ek = ByteEncode12(t_hat[0..k-1]) || rho.
+                            //
+                            // The controller sequences these as transcoder sub-ops
+                            // within one host-visible CMD_STORE transaction.
+                            // host_if is responsible for suppressing intermediate
+                            // TLAST beats so software observes one continuous frame.
+                            unique case (active_tr_opcode_r)
+                                TR_OP_KG_EXPORT_DK_PKE: begin
+                                    active_tr_opcode_n = TR_OP_KG_EXPORT_EK_PKE_1;
+                                    state_n            = CTRL_STORE_ISSUE_TR;
+                                end
+                                TR_OP_KG_EXPORT_EK_PKE_1: begin
+                                    active_tr_opcode_n = TR_OP_KG_EXPORT_EK_PKE_2;
+                                    state_n            = CTRL_STORE_ISSUE_TR;
+                                end
+                                TR_OP_KG_EXPORT_EK_PKE_2: begin
+                                    active_tr_opcode_n = TR_OP_KG_EXPORT_HEK;
+                                    state_n            = CTRL_STORE_ISSUE_TR;
+                                end
+                                default: begin
+                                    done_pulse_n = 1'b1;
+                                    state_n      = CTRL_IDLE;
+                                end
+                            endcase
+                        end
+                        else if ((cmd_mode_lat_r == MODE_KEYGEN) &&
+                                 (cmd_payload_id_lat_r == PLD_EK) &&
+                                 (active_tr_opcode_r == TR_OP_KG_EXPORT_EK_PKE_1)) begin
+                            // Current transcoder exposes EK as t_hat and rho sub-ops.
+                            // The controller keeps the split sequencing explicit; host_if
+                            // bridges the intermediate TLAST so software sees one
+                            // continuous PLD_EK frame until a unified transcoder opcode
+                            // exists.
                             active_tr_opcode_n = TR_OP_KG_EXPORT_EK_PKE_2;
                             state_n            = CTRL_STORE_EK_ISSUE_RHO;
                         end
@@ -608,8 +647,8 @@ module core_control_unit (
     // ---------------------------------------------------------------------
     // Sequential state
     // ---------------------------------------------------------------------
-    always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
+    always_ff @(posedge clk or posedge rst) begin
+        if (rst) begin
             state_r <= CTRL_IDLE;
 
             cmd_opcode_lat_r     <= CMD_NOP;
@@ -644,6 +683,10 @@ module core_control_unit (
             err_code_r   <= err_code_n;
 
             if ((state_r == CTRL_IDLE) && cmd_valid_i && cmd_ready_o && !cmd_zeroize_i) begin
+                // Command acceptance point:
+                // Capture a stable snapshot of {opcode,mode,sec_lvl,payload,len}.
+                // The controller and kg_fsm must use this latched security-level
+                // to derive k_active and loop bounds for the entire operation.
                 cmd_opcode_lat_r     <= cmd_opcode_i;
                 cmd_mode_lat_r       <= cmd_mode_i;
                 cmd_sec_lvl_lat_r    <= cmd_sec_lvl_i;
@@ -674,6 +717,10 @@ module core_control_unit (
                 if (set_hek_loaded_n) hek_loaded_r <= 1'b1;
 
                 if (set_keygen_valid_n) begin
+                    // KeyGen result validity:
+                    //   - ek is exportable
+                    //   - dk_valid indicates locked dk_partial (no z; host appends z later)
+                    //   - H(ek) is present in Seed RAM and exportable via PLD_HEK
                     ek_valid_r  <= 1'b1;
                     dk_valid_r  <= 1'b1;
                     hek_valid_r <= 1'b1;
@@ -695,7 +742,7 @@ module core_control_unit (
     // ------------------------------------------------------------------
     kg_fsm u_kg_fsm (
         .clk                    (clk),
-        .rst_n                  (rst_n),
+        .rst                    (rst),
         // Control
         .kg_start_i             (kg_start_w),
         .kg_abort_i             (kg_abort_w),

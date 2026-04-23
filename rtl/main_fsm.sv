@@ -15,12 +15,12 @@ import core_ctrl_pkg::*;
 
 module main_fsm (
     input logic clk,
-    input logic rst_n
+    input logic rst
 );
     // Intentionally empty.
     logic unused_clk;
-    logic unused_rst_n;
+    logic unused_rst;
 
     assign unused_clk   = clk;
-    assign unused_rst_n = rst_n;
+    assign unused_rst   = rst;
 endmodule

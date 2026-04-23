@@ -20,7 +20,7 @@
 
 module host_if (
     input  logic        clk,
-    input  logic        rst_n,
+    input  logic        rst,
 
     // ============================================================
     // AXI4-Lite Slave Interface (Control / Status / Config)
@@ -263,6 +263,8 @@ module host_if (
     logic [31:0] command_wr_img_w;
     logic [15:0] rx_next_bytes_w;
     logic [15:0] tx_next_bytes_w;
+    logic        keygen_composite_tx_w;
+    logic        host_tx_tlast_w;
 
     assign seed_d_o = 256'h0;
     assign seed_z_o = 256'h0;
@@ -295,9 +297,22 @@ module host_if (
 
     // TX opens only for an accepted CMD_STORE. The host sees valid data only
     // while PH_TX is active, and host backpressure is forwarded to transcoder.
-    assign m_axis_tx_tdata  = (phase_r == PH_TX) ? tc_tx_tdata_i  : 64'h0;
-    assign m_axis_tx_tvalid = (phase_r == PH_TX) ? tc_tx_tvalid_i : 1'b0;
-    assign m_axis_tx_tlast  = (phase_r == PH_TX) ? tc_tx_tlast_i  : 1'b0;
+    //
+    // For KeyGen EK/dk_partial exports, the controller sequences multiple
+    // transcoder sub-ops. host_if must present a single host-visible AXI frame,
+    // even if transcoder emits intermediate TLAST beats.
+    assign keygen_composite_tx_w =
+        (cmd_opcode_lat_r == CMD_STORE) &&
+        (cmd_mode_lat_r   == MODE_KEYGEN) &&
+        ((cmd_payload_id_lat_r == PLD_EK) || (cmd_payload_id_lat_r == PLD_DK));
+
+    assign host_tx_tlast_w = keygen_composite_tx_w ?
+                             (tx_next_bytes_w == cmd_xfer_len_lat_r) :
+                             tc_tx_tlast_i;
+
+    assign m_axis_tx_tdata  = (phase_r == PH_TX) ? tc_tx_tdata_i   : 64'h0;
+    assign m_axis_tx_tvalid = (phase_r == PH_TX) ? tc_tx_tvalid_i  : 1'b0;
+    assign m_axis_tx_tlast  = (phase_r == PH_TX) ? (host_tx_tlast_w && tc_tx_tvalid_i) : 1'b0;
     assign tc_tx_tready_o   = (phase_r == PH_TX) ? m_axis_tx_tready : 1'b0;
 
     assign rx_hs_w = s_axis_rx_tvalid && s_axis_rx_tready;
@@ -396,44 +411,125 @@ module host_if (
     endfunction
 
     function automatic logic [15:0] decode_xfer_len (
+        input logic [3:0] opcode,
+        input logic [3:0] mode,
         input logic [1:0] sec_lvl,
         input logic [4:0] payload_id
     );
         begin
+            // CMD_START is controller-owned (no stream payload).
+            decode_xfer_len = 16'd0;
+
+            if ((opcode == CMD_LOAD) || (opcode == CMD_STORE)) begin
+                unique case (payload_id)
+                    PLD_D, PLD_Z, PLD_M, PLD_HEK, PLD_SHARED_K: begin
+                        decode_xfer_len = 16'd32;
+                    end
+
+                    PLD_EK: begin
+                        unique case (sec_lvl)
+                            SEC_512:  decode_xfer_len = 16'd800;
+                            SEC_768:  decode_xfer_len = 16'd1184;
+                            SEC_1024: decode_xfer_len = 16'd1568;
+                            default:  decode_xfer_len = 16'd0;
+                        endcase
+                    end
+
+                    PLD_DK: begin
+                        if ((opcode == CMD_STORE) && (mode == MODE_KEYGEN)) begin
+                            // Locked KeyGen: PLD_DK is dk_partial (no z; host appends z later).
+                            unique case (sec_lvl)
+                                SEC_512:  decode_xfer_len = 16'd1600;
+                                SEC_768:  decode_xfer_len = 16'd2368;
+                                SEC_1024: decode_xfer_len = 16'd3136;
+                                default:  decode_xfer_len = 16'd0;
+                            endcase
+                        end
+                        else begin
+                            // Full DK (e.g. Decaps ingest path).
+                            unique case (sec_lvl)
+                                SEC_512:  decode_xfer_len = 16'd1632;
+                                SEC_768:  decode_xfer_len = 16'd2400;
+                                SEC_1024: decode_xfer_len = 16'd3168;
+                                default:  decode_xfer_len = 16'd0;
+                            endcase
+                        end
+                    end
+
+                    PLD_C: begin
+                        unique case (sec_lvl)
+                            SEC_512:  decode_xfer_len = 16'd768;
+                            SEC_768:  decode_xfer_len = 16'd1088;
+                            SEC_1024: decode_xfer_len = 16'd1568;
+                            default:  decode_xfer_len = 16'd0;
+                        endcase
+                    end
+
+                    default: begin
+                        decode_xfer_len = 16'd0;
+                    end
+                endcase
+            end
+        end
+    endfunction
+
+    // ------------------------------------------------------------
+    // KeyGen composite TX framing helpers (CMD_STORE + MODE_KEYGEN)
+    // ------------------------------------------------------------
+    // Today the controller sequences multiple transcoder opcodes to emit a
+    // single host payload (EK or dk_partial). That means tc_tx_tlast_i can
+    // assert at intermediate segment boundaries. For these KeyGen stores,
+    // host_if must tolerate the intermediate TLAST beats, suppress them to the
+    // host, and only assert m_axis_tx_tlast on the final beat that reaches the
+    // controller-provided cmd_xfer_len_lat_r.
+    function automatic logic keygen_store_intermediate_tlast_ok (
+        input logic [1:0]  sec_lvl,
+        input logic [4:0]  payload_id,
+        input logic [15:0] next_bytes,
+        input logic [15:0] expected_total_bytes
+    );
+        begin
+            keygen_store_intermediate_tlast_ok = 1'b0;
+
             unique case (payload_id)
-                PLD_D, PLD_Z, PLD_M, PLD_HEK, PLD_SHARED_K: begin
-                    decode_xfer_len = 16'd32;
-                end
-
+                // ek = ByteEncode12(t_hat) || rho. Allow the boundary after t_hat.
                 PLD_EK: begin
-                    unique case (sec_lvl)
-                        SEC_512:  decode_xfer_len = 16'd800;
-                        SEC_768:  decode_xfer_len = 16'd1184;
-                        SEC_1024: decode_xfer_len = 16'd1568;
-                        default:  decode_xfer_len = 16'd0;
-                    endcase
+                    if (expected_total_bytes >= 16'd32) begin
+                        keygen_store_intermediate_tlast_ok =
+                            (next_bytes == (expected_total_bytes - 16'd32));
+                    end
                 end
 
+                // dk_partial = ByteEncode12(s_hat) || ByteEncode12(t_hat) || rho || H(ek).
+                // Allow intermediate TLAST at each segment boundary.
                 PLD_DK: begin
                     unique case (sec_lvl)
-                        SEC_512:  decode_xfer_len = 16'd1632;
-                        SEC_768:  decode_xfer_len = 16'd2400;
-                        SEC_1024: decode_xfer_len = 16'd3168;
-                        default:  decode_xfer_len = 16'd0;
-                    endcase
-                end
-
-                PLD_C: begin
-                    unique case (sec_lvl)
-                        SEC_512:  decode_xfer_len = 16'd768;
-                        SEC_768:  decode_xfer_len = 16'd1088;
-                        SEC_1024: decode_xfer_len = 16'd1568;
-                        default:  decode_xfer_len = 16'd0;
+                        SEC_512: begin
+                            keygen_store_intermediate_tlast_ok =
+                                (next_bytes == 16'd768)  || // s_hat (k=2)
+                                (next_bytes == 16'd1536) || // t_hat (k=2)
+                                (next_bytes == 16'd1568);   // rho (k=2)
+                        end
+                        SEC_768: begin
+                            keygen_store_intermediate_tlast_ok =
+                                (next_bytes == 16'd1152) || // s_hat (k=3)
+                                (next_bytes == 16'd2304) || // t_hat (k=3)
+                                (next_bytes == 16'd2336);   // rho (k=3)
+                        end
+                        SEC_1024: begin
+                            keygen_store_intermediate_tlast_ok =
+                                (next_bytes == 16'd1536) || // s_hat (k=4)
+                                (next_bytes == 16'd3072) || // t_hat (k=4)
+                                (next_bytes == 16'd3104);   // rho (k=4)
+                        end
+                        default: begin
+                            keygen_store_intermediate_tlast_ok = 1'b0;
+                        end
                     endcase
                 end
 
                 default: begin
-                    decode_xfer_len = 16'd0;
+                    keygen_store_intermediate_tlast_ok = 1'b0;
                 end
             endcase
         end
@@ -494,7 +590,12 @@ module host_if (
         end
     endfunction
 
-    assign live_decoded_xfer_len_w = decode_xfer_len(csr_sec_lvl_r, csr_payload_id_r);
+    assign live_decoded_xfer_len_w = decode_xfer_len(
+        csr_opcode_r,
+        csr_mode_r,
+        csr_sec_lvl_r,
+        csr_payload_id_r
+    );
     assign control_wr_img_w = apply_wstrb(
         control_reg_image(irq_done_en_r, irq_err_en_r),
         w_buf_data_r,
@@ -596,10 +697,7 @@ module host_if (
                 raise_error(ERR_ILLEGAL_CMD, overwrite_error_code);
             end
             else begin
-                dec_len = 16'd0;
-                if (csr_opcode_r != CMD_START) begin
-                    dec_len = decode_xfer_len(csr_sec_lvl_r, csr_payload_id_r);
-                end
+                dec_len = decode_xfer_len(csr_opcode_r, csr_mode_r, csr_sec_lvl_r, csr_payload_id_r);
 
                 if (((csr_opcode_r == CMD_LOAD) || (csr_opcode_r == CMD_STORE)) &&
                     (dec_len == 16'd0)) begin
@@ -624,8 +722,8 @@ module host_if (
     // ============================================================
     // AXI4-Lite, Command, and Transfer Sequencing
     // ============================================================
-    always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
+    always_ff @(posedge clk or posedge rst) begin
+        if (rst) begin
             s_axi_bresp  <= 2'b00;
             s_axi_bvalid <= 1'b0;
             s_axi_rdata  <= 32'h0000_0000;
@@ -804,7 +902,15 @@ module host_if (
                                 if (tx_next_bytes_w > cmd_xfer_len_lat_r) begin
                                     raise_error(ERR_TX_OVERRUN, status_err_w1c_w);
                                 end
-                                else if (tc_tx_tlast_i && (tx_next_bytes_w != cmd_xfer_len_lat_r)) begin
+                                else if (tc_tx_tlast_i &&
+                                         (tx_next_bytes_w != cmd_xfer_len_lat_r) &&
+                                         !(keygen_composite_tx_w &&
+                                           keygen_store_intermediate_tlast_ok(
+                                               cmd_sec_lvl_lat_r,
+                                               cmd_payload_id_lat_r,
+                                               tx_next_bytes_w,
+                                               cmd_xfer_len_lat_r
+                                           ))) begin
                                     raise_error(ERR_TX_EARLY_TLAST, status_err_w1c_w);
                                 end
                                 else if (!tc_tx_tlast_i && (tx_next_bytes_w == cmd_xfer_len_lat_r)) begin

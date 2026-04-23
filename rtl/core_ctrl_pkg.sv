@@ -49,9 +49,20 @@ package core_ctrl_pkg;
     localparam logic [1:0] HSU_IN_POLY = 2'd1;
     localparam logic [1:0] HSU_IN_AXIS = 2'd2;
 
-    // Controller-visible polynomial slots. These mirror the current memory
-    // subsystem map and let the controller express ownership without pulling
-    // in the whole memory repository.
+    // ------------------------------------------------------------------
+    // Controller-visible polynomial slots
+    // ------------------------------------------------------------------
+    // Locked KeyGen intent (memory safety enforced by scheduling, not RAM HW):
+    //   Poly 0..3  : s_j / s_hat_j (only 0..k-1 used; unused slots idle)
+    //   Poly 4     : active error scratchpad e_i / e_hat_i
+    //   Poly 5..8  : active A_hat row buffer (A_hat(i,0..k-1))
+    //   Poly 9..12 : final t_hat_i (t_hat(0..k-1))
+    //
+    // The controller must explicitly limit loops to the first k entries.
+    // No formatter/transcoder/memory module should infer k implicitly.
+    //
+    // These IDs mirror the current memory subsystem map and let the controller
+    // express ownership without importing the full memory repository.
     localparam logic [POLY_ID_WIDTH-1:0] CTRL_POLY_S_BASE = POLY_ID_WIDTH'(0);
     localparam logic [POLY_ID_WIDTH-1:0] CTRL_POLY_EI     = POLY_ID_WIDTH'(4);
     localparam logic [POLY_ID_WIDTH-1:0] CTRL_POLY_A_BASE = POLY_ID_WIDTH'(5);
