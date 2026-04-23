@@ -56,6 +56,26 @@ module core_control_unit_tb;
 
     always #5 clk = ~clk;
 
+    // Optional VCD dumping for simulators that honor $dumpvars.
+    // Questasim/vsim runs already emit a VCD via build-tools/common.mk.
+    initial begin
+`ifdef VERILATOR
+        if ($test$plusargs("vcd")) begin
+            $dumpfile("core_control_unit_tb.vcd");
+            $dumpvars(0, core_control_unit_tb);
+            $dumpvars(0, dut);
+            $dumpvars(0, dut.u_kg_fsm);
+        end
+`elsif __ICARUS__
+        if ($test$plusargs("vcd")) begin
+            $dumpfile("core_control_unit_tb.vcd");
+            $dumpvars(0, core_control_unit_tb);
+            $dumpvars(0, dut);
+            $dumpvars(0, dut.u_kg_fsm);
+        end
+`endif
+    end
+
     task automatic check(input logic cond, input string msg);
         begin
             if (!cond) begin
@@ -247,6 +267,23 @@ module core_control_unit_tb;
         end
     endtask
 
+    task automatic expect_absorb_rho();
+        int timeout;
+        begin
+            timeout = 0;
+            while (!hsu_absorb_poly_o && (timeout < 40)) begin
+                tick(1);
+                timeout++;
+            end
+            check(hsu_hash_ek_read_en_o, "H(ek) read enable should be asserted");
+            check(hsu_mode_o == MODE_ABSORB_POLY, "H(ek) should use MODE_ABSORB_POLY");
+            check(hsu_input_sel_o == HSU_IN_SEED, "rho absorb should use Seed RAM input");
+            check(hsu_seed_id_o == SEED_ID_RHO, "rho absorb should select SEED_ID_RHO");
+            check(hsu_absorb_last_o, "rho absorb should assert absorb_last");
+            tick(1);
+        end
+    endtask
+
     task automatic run_keygen_k2();
         begin
             send_cmd(CMD_START, MODE_KEYGEN, SEC_512, PLD_NONE);
@@ -266,6 +303,8 @@ module core_control_unit_tb;
 
             expect_hsu_start(MODE_SAMPLE_CBD, CTRL_POLY_EI, SEED_ID_SIGMA);
             finish_hsu();
+            expect_pau_start(PAU_JOB_NTT_IN_PLACE, CTRL_POLY_EI, 3'd0);
+            finish_pau();
             expect_hsu_start(MODE_SAMPLE_NTT, CTRL_POLY_A_BASE + POLY_ID_WIDTH'(0), SEED_ID_RHO);
             finish_hsu();
             expect_hsu_start(MODE_SAMPLE_NTT, CTRL_POLY_A_BASE + POLY_ID_WIDTH'(1), SEED_ID_RHO);
@@ -275,6 +314,8 @@ module core_control_unit_tb;
 
             expect_hsu_start(MODE_SAMPLE_CBD, CTRL_POLY_EI, SEED_ID_SIGMA);
             finish_hsu();
+            expect_pau_start(PAU_JOB_NTT_IN_PLACE, CTRL_POLY_EI, 3'd0);
+            finish_pau();
             expect_hsu_start(MODE_SAMPLE_NTT, CTRL_POLY_A_BASE + POLY_ID_WIDTH'(0), SEED_ID_RHO);
             finish_hsu();
             expect_hsu_start(MODE_SAMPLE_NTT, CTRL_POLY_A_BASE + POLY_ID_WIDTH'(1), SEED_ID_RHO);
@@ -284,7 +325,8 @@ module core_control_unit_tb;
 
             expect_hsu_start(MODE_ABSORB_POLY, '0, SEED_ID_HEK);
             expect_absorb_t(CTRL_POLY_T_BASE + POLY_ID_WIDTH'(0), 1'b0);
-            expect_absorb_t(CTRL_POLY_T_BASE + POLY_ID_WIDTH'(1), 1'b1);
+            expect_absorb_t(CTRL_POLY_T_BASE + POLY_ID_WIDTH'(1), 1'b0);
+            expect_absorb_rho();
             finish_hsu();
             expect_done("KeyGen should finish after H(ek)");
         end
