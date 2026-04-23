@@ -20,7 +20,7 @@
 
 module host_if (
     input  logic        clk,
-    input  logic        rst_n,
+    input  logic        rst,
 
     // ============================================================
     // AXI4-Lite Slave Interface (Control / Status / Config)
@@ -722,8 +722,8 @@ module host_if (
     // ============================================================
     // AXI4-Lite, Command, and Transfer Sequencing
     // ============================================================
-    always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
+    always_ff @(posedge clk or posedge rst) begin
+        if (rst) begin
             s_axi_bresp  <= 2'b00;
             s_axi_bvalid <= 1'b0;
             s_axi_rdata  <= 32'h0000_0000;

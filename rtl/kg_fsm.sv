@@ -29,7 +29,7 @@ import core_ctrl_pkg::*;
 
 module kg_fsm (
     input  logic                        clk,
-    input  logic                        rst_n,
+    input  logic                        rst,
 
     // ------------------------------------------------------------------
     // Handshake with core_control_unit
@@ -535,8 +535,8 @@ module kg_fsm (
     // ------------------------------------------------------------------
     // Sequential state
     // ------------------------------------------------------------------
-    always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
+    always_ff @(posedge clk or posedge rst) begin
+        if (rst) begin
             state_r    <= KG_IDLE;
             k_active_r <= 3'd0;
             s_idx_r    <= 3'd0;

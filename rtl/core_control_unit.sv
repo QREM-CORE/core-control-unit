@@ -23,7 +23,7 @@ import core_ctrl_pkg::*;
 
 module core_control_unit (
     input  logic                         clk,
-    input  logic                         rst_n,
+    input  logic                         rst,
 
     // ---------------------------------------------------------------------
     // Latched high-level command input from host_if
@@ -647,8 +647,8 @@ module core_control_unit (
     // ---------------------------------------------------------------------
     // Sequential state
     // ---------------------------------------------------------------------
-    always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
+    always_ff @(posedge clk or posedge rst) begin
+        if (rst) begin
             state_r <= CTRL_IDLE;
 
             cmd_opcode_lat_r     <= CMD_NOP;
@@ -742,7 +742,7 @@ module core_control_unit (
     // ------------------------------------------------------------------
     kg_fsm u_kg_fsm (
         .clk                    (clk),
-        .rst_n                  (rst_n),
+        .rst                    (rst),
         // Control
         .kg_start_i             (kg_start_w),
         .kg_abort_i             (kg_abort_w),

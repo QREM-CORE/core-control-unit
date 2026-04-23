@@ -5,7 +5,7 @@ import core_ctrl_pkg::*;
 
 module core_control_unit_tb;
     logic clk;
-    logic rst_n;
+    logic rst;
 
     logic        cmd_valid_i;
     logic        cmd_ready_o;
@@ -97,7 +97,7 @@ module core_control_unit_tb;
     task automatic reset_dut();
         begin
             clk = 1'b0;
-            rst_n = 1'b0;
+            rst = 1'b1;
             cmd_valid_i = 1'b0;
             cmd_opcode_i = CMD_NOP;
             cmd_mode_i = MODE_NONE;
@@ -116,7 +116,7 @@ module core_control_unit_tb;
             mem_fault_i = 1'b0;
             mem_fault_code_i = 3'b000;
             tick(3);
-            rst_n = 1'b1;
+            rst = 1'b0;
             tick(2);
             check(cmd_ready_o, "controller should be ready after reset");
         end

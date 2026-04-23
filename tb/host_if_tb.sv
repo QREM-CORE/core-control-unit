@@ -11,7 +11,7 @@ import core_ctrl_pkg::*;
 //   - dut.err_sticky_r / dut.err_code_r
 module host_if_tb;
     logic clk;
-    logic rst_n;
+    logic rst;
 
     // AXI4-Lite (minimal single-beat driver)
     logic [7:0]  s_axi_awaddr;
@@ -211,7 +211,7 @@ module host_if_tb;
     task automatic reset_dut;
         begin
             clk = 1'b0;
-            rst_n = 1'b0;
+            rst = 1'b1;
 
             s_axi_awaddr  = 8'h00;
             s_axi_awvalid = 1'b0;
@@ -241,7 +241,7 @@ module host_if_tb;
             tc_tx_tlast_i  = 1'b0;
 
             tick(4);
-            rst_n = 1'b1;
+            rst = 1'b0;
             tick(2);
         end
     endtask
