@@ -1,0 +1,12 @@
+work/
+transcript
+*.vcd
+*.macro
+*.log
+*.txt
+build/*
+build_*
+build.f
+*.do
+*.dovlog
+obj_dir/

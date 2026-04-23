@@ -1,0 +1,31 @@
+name: PR Build Pipeline
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  call-central-builder:
+    uses: QREM-CORE/build-tools/.github/workflows/central-builder.yml@main
+    with:
+      # Automatically targets the repository and specific commit of the PR
+      rtl_repo: ${{ github.repository }}
+      commit_sha: ${{ github.sha }}
+
+      # Your comma-separated top modules for the Yosys synthesis matrix
+      top_modules: 'core_control_unit'
+
+      build_tools_ref: 'main'
+
+      synth_targets: 'fpga,asic'
+
+      enable_synth: true
+      enable_lint: true
+      enable_verilator: true
+      enable_vsim: true

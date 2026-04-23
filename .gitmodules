@@ -1,0 +1,6 @@
+[submodule "lib/common-rtl"]
+	path = lib/common-rtl
+	url = ../common-rtl.git
+[submodule "build-tools"]
+	path = build-tools
+	url = ../build-tools.git
