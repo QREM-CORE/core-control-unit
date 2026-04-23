@@ -82,7 +82,8 @@ module host_if_tb;
 
 `ifdef VERILATOR
     initial begin
-        if ($test$plusargs("vcd")) begin
+        int vcd_en;
+        if ($value$plusargs("vcd=%d", vcd_en) && (vcd_en != 0)) begin
             $dumpfile("host_if_tb.vcd");
             $dumpvars(0, host_if_tb);
             $dumpvars(0, dut);
@@ -90,7 +91,8 @@ module host_if_tb;
     end
 `elsif __ICARUS__
     initial begin
-        if ($test$plusargs("vcd")) begin
+        int vcd_en;
+        if ($value$plusargs("vcd=%d", vcd_en) && (vcd_en != 0)) begin
             $dumpfile("host_if_tb.vcd");
             $dumpvars(0, host_if_tb);
             $dumpvars(0, dut);

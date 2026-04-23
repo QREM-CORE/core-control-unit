@@ -60,14 +60,16 @@ module core_control_unit_tb;
     // Questasim/vsim runs already emit a VCD via build-tools/common.mk.
     initial begin
 `ifdef VERILATOR
-        if ($test$plusargs("vcd")) begin
+        int vcd_en;
+        if ($value$plusargs("vcd=%d", vcd_en) && (vcd_en != 0)) begin
             $dumpfile("core_control_unit_tb.vcd");
             $dumpvars(0, core_control_unit_tb);
             $dumpvars(0, dut);
             $dumpvars(0, dut.u_kg_fsm);
         end
 `elsif __ICARUS__
-        if ($test$plusargs("vcd")) begin
+        int vcd_en;
+        if ($value$plusargs("vcd=%d", vcd_en) && (vcd_en != 0)) begin
             $dumpfile("core_control_unit_tb.vcd");
             $dumpvars(0, core_control_unit_tb);
             $dumpvars(0, dut);
