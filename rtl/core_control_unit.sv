@@ -99,7 +99,7 @@ module core_control_unit (
     // ---------------------------------------------------------------------
     // Controller state
     // ---------------------------------------------------------------------
-    typedef enum logic [5:0] {
+    typedef enum logic [3:0] {
         CTRL_IDLE,
         CTRL_DECODE,
 
@@ -113,31 +113,9 @@ module core_control_unit (
 
         CTRL_START_DISPATCH,
 
-        CTRL_KG_PRECHECK,
-        CTRL_KG_DERIVE_ISSUE,
-        CTRL_KG_DERIVE_WAIT,
-
-        CTRL_KG_SAMPLE_S_ISSUE,
-        CTRL_KG_SAMPLE_S_WAIT,
-        CTRL_KG_NTT_S_ISSUE,
-        CTRL_KG_NTT_S_WAIT,
-        CTRL_KG_NEXT_S,
-
-        CTRL_KG_SAMPLE_E_ISSUE,
-        CTRL_KG_SAMPLE_E_WAIT,
-        CTRL_KG_SAMPLE_A_ISSUE,
-        CTRL_KG_SAMPLE_A_WAIT,
-        CTRL_KG_NEXT_A_COL,
-        CTRL_KG_ROWMAC_ISSUE,
-        CTRL_KG_ROWMAC_WAIT,
-        CTRL_KG_NEXT_ROW,
-
-        CTRL_KG_HASH_EK_START,
-        CTRL_KG_HASH_EK_ABSORB_T,
-        CTRL_KG_HASH_EK_WAIT_T,
-        CTRL_KG_HASH_EK_NEXT_T,
-        CTRL_KG_HASH_EK_WAIT_DONE,
-        CTRL_KG_DONE,
+        // KeyGen sequencing is fully delegated to kg_fsm.
+        // This state holds while kg_fsm.kg_active_o is high.
+        CTRL_KEYGEN,
 
         CTRL_UNSUPPORTED,
         CTRL_ZEROIZE_ISSUE,
@@ -170,20 +148,10 @@ module core_control_unit (
     logic hek_valid_r;
     logic ss_valid_r;
 
-    // Loop counters for KeyGen. k_active_r is decoded from the active security
-    // level and controls which subset of S/A/T slots participates.
-    logic [2:0] k_active_r;
-    logic [2:0] s_idx_r;
-    logic [2:0] row_idx_r;
-    logic [2:0] col_idx_r;
-    logic [2:0] hash_idx_r;
-
-    // Last issued transcoder opcode is latched so wait states remain stable
-    // even if a new command arrives at host_if while this controller is busy.
+    // Transcoder opcode latch — keeps wait states stable while controller is busy.
     tr_opcode_t active_tr_opcode_r, active_tr_opcode_n;
 
-    // One-cycle host-visible status pulses. host_if converts these to sticky
-    // CSR bits; the controller deliberately does not hold them high.
+    // One-cycle host-visible status pulses.
     logic       done_pulse_n;
     logic [3:0] err_code_n;
     logic       done_pulse_r;
@@ -199,16 +167,31 @@ module core_control_unit (
     logic set_hek_loaded_n;
     logic set_keygen_valid_n;
     logic clear_protocol_n;
-    logic init_keygen_n;
-    logic inc_s_idx_n;
-    logic inc_row_idx_n;
-    logic inc_col_idx_n;
-    logic inc_hash_idx_n;
-    logic clear_col_idx_n;
-    logic clear_hash_idx_n;
 
-    logic [2:0] cmd_k_w;
-    assign cmd_k_w = core_ctrl_pkg::ctrl_k_from_sec(cmd_sec_lvl_lat_r);
+    // ------------------------------------------------------------------
+    // kg_fsm wiring
+    // ------------------------------------------------------------------
+    logic        kg_start_w;        // one-cycle pulse into kg_fsm
+    logic        kg_abort_w;        // asserted when CCU aborts an in-flight keygen
+    logic        kg_active_w;       // high while kg_fsm owns the datapaths
+    logic        kg_done_w;         // one-cycle success pulse from kg_fsm
+    logic        kg_err_w;          // one-cycle error pulse from kg_fsm
+    logic [3:0]  kg_err_code_w;
+
+    // kg_fsm-driven datapath signals (muxed onto CCU outputs below)
+    logic                      kg_hsu_start_w;
+    hs_mode_t                  kg_hsu_mode_w;
+    logic [CTRL_XOF_LEN_W-1:0] kg_hsu_xof_len_w;
+    logic                      kg_hsu_is_eta3_w;
+    logic [POLY_ID_WIDTH-1:0]  kg_hsu_poly_id_w;
+    seed_id_e                  kg_hsu_seed_id_w;
+    logic [1:0]                kg_hsu_input_sel_w;
+    logic                      kg_hsu_absorb_poly_w;
+    logic                      kg_hsu_absorb_last_w;
+    logic                      kg_hsu_hash_ek_read_en_w;
+    logic                      kg_pau_start_w;
+    ctrl_pau_job_t             kg_pau_job_w;
+    ctrl_mem_phase_t           kg_mem_phase_w;
 
     // ---------------------------------------------------------------------
     // Small decode helpers
@@ -322,29 +305,17 @@ module core_control_unit (
         end
     endfunction
 
-    function automatic logic [POLY_ID_WIDTH-1:0] s_poly_id (
-        input logic [2:0] idx
-    );
-        begin
-            s_poly_id = CTRL_POLY_S_BASE + POLY_ID_WIDTH'(idx);
-        end
-    endfunction
+    // s/a/t poly-id helpers removed — now live in kg_fsm.
 
-    function automatic logic [POLY_ID_WIDTH-1:0] a_poly_id (
-        input logic [2:0] idx
-    );
-        begin
-            a_poly_id = CTRL_POLY_A_BASE + POLY_ID_WIDTH'(idx);
-        end
-    endfunction
+    // kg_start is a one-cycle pulse generated combinatorially from CTRL_START_DISPATCH.
+    assign kg_start_w = (state_r == CTRL_START_DISPATCH) &&
+                        (cmd_mode_lat_r == MODE_KEYGEN);
 
-    function automatic logic [POLY_ID_WIDTH-1:0] t_poly_id (
-        input logic [2:0] idx
-    );
-        begin
-            t_poly_id = CTRL_POLY_T_BASE + POLY_ID_WIDTH'(idx);
-        end
-    endfunction
+    // Abort kg_fsm only on a zeroize pulse while KeyGen is running.
+    // Subsystem errors (tr/hsu/pau/mem) are caught by the parent's global error
+    // check which immediately overrides state_n to CTRL_ERROR, bypassing the
+    // CTRL_KEYGEN case entirely — no additional abort signal is needed for those.
+    assign kg_abort_w = (state_r == CTRL_KEYGEN) && cmd_zeroize_i;
 
     // ---------------------------------------------------------------------
     // Combinational control
@@ -356,38 +327,32 @@ module core_control_unit (
         done_pulse_n = 1'b0;
         err_code_n   = CTRL_ERR_NONE;
 
-        set_d_loaded_n   = 1'b0;
-        set_m_loaded_n   = 1'b0;
-        set_z_loaded_n   = 1'b0;
-        set_ek_loaded_n  = 1'b0;
-        set_dk_loaded_n  = 1'b0;
-        set_c_loaded_n   = 1'b0;
-        set_hek_loaded_n = 1'b0;
+        set_d_loaded_n     = 1'b0;
+        set_m_loaded_n     = 1'b0;
+        set_z_loaded_n     = 1'b0;
+        set_ek_loaded_n    = 1'b0;
+        set_dk_loaded_n    = 1'b0;
+        set_c_loaded_n     = 1'b0;
+        set_hek_loaded_n   = 1'b0;
         set_keygen_valid_n = 1'b0;
-        clear_protocol_n = 1'b0;
-        init_keygen_n    = 1'b0;
-        inc_s_idx_n      = 1'b0;
-        inc_row_idx_n    = 1'b0;
-        inc_col_idx_n    = 1'b0;
-        inc_hash_idx_n   = 1'b0;
-        clear_col_idx_n  = 1'b0;
-        clear_hash_idx_n = 1'b0;
+        clear_protocol_n   = 1'b0;
 
         cmd_ready_o = (state_r == CTRL_IDLE);
 
         tr_start_o  = 1'b0;
         tr_opcode_o = active_tr_opcode_r;
 
-        hsu_start_o            = 1'b0;
-        hsu_mode_o             = MODE_HASH_SHA3_256;
-        hsu_xof_len_o          = CTRL_XOF_LEN_UNUSED;
-        hsu_is_eta3_o          = core_ctrl_pkg::ctrl_is_eta3(cmd_sec_lvl_lat_r);
-        hsu_poly_id_o          = '0;
-        hsu_seed_id_o          = SEED_ID_TMP;
-        hsu_input_sel_o        = HSU_IN_SEED;
-        hsu_absorb_poly_o      = 1'b0;
-        hsu_absorb_last_o      = 1'b0;
-        hsu_hash_ek_read_en_o  = 1'b0;
+        // Default HSU/PAU/mem outputs — overridden by kg_fsm mux below.
+        hsu_start_o           = 1'b0;
+        hsu_mode_o            = MODE_HASH_SHA3_256;
+        hsu_xof_len_o         = CTRL_XOF_LEN_UNUSED;
+        hsu_is_eta3_o         = core_ctrl_pkg::ctrl_is_eta3(cmd_sec_lvl_lat_r);
+        hsu_poly_id_o         = '0;
+        hsu_seed_id_o         = SEED_ID_TMP;
+        hsu_input_sel_o       = HSU_IN_SEED;
+        hsu_absorb_poly_o     = 1'b0;
+        hsu_absorb_last_o     = 1'b0;
+        hsu_hash_ek_read_en_o = 1'b0;
 
         pau_start_o = 1'b0;
         pau_job_o   = '0;
@@ -560,7 +525,7 @@ module core_control_unit (
 
                 CTRL_START_DISPATCH: begin
                     unique case (cmd_mode_lat_r)
-                        MODE_KEYGEN: state_n = CTRL_KG_PRECHECK;
+                        MODE_KEYGEN: state_n = CTRL_KEYGEN;  // kg_start_w pulses this cycle
                         MODE_ENCAPS,
                         MODE_DECAPS: state_n = CTRL_UNSUPPORTED;
                         default: begin
@@ -570,246 +535,34 @@ module core_control_unit (
                     endcase
                 end
 
-                CTRL_KG_PRECHECK: begin
-                    if (!d_loaded_r) begin
+                CTRL_KEYGEN: begin
+                    // Mux kg_fsm outputs onto the shared buses while it is active.
+                    hsu_start_o           = kg_hsu_start_w;
+                    hsu_mode_o            = kg_hsu_mode_w;
+                    hsu_xof_len_o         = kg_hsu_xof_len_w;
+                    hsu_is_eta3_o         = kg_hsu_is_eta3_w;
+                    hsu_poly_id_o         = kg_hsu_poly_id_w;
+                    hsu_seed_id_o         = kg_hsu_seed_id_w;
+                    hsu_input_sel_o       = kg_hsu_input_sel_w;
+                    hsu_absorb_poly_o     = kg_hsu_absorb_poly_w;
+                    hsu_absorb_last_o     = kg_hsu_absorb_last_w;
+                    hsu_hash_ek_read_en_o = kg_hsu_hash_ek_read_en_w;
+                    pau_start_o           = kg_pau_start_w;
+                    pau_job_o             = kg_pau_job_w;
+                    mem_phase_o           = kg_mem_phase_w;
+
+                    if (kg_done_w) begin
+                        set_keygen_valid_n = 1'b1;
+                        done_pulse_n       = 1'b1;
+                        state_n            = CTRL_IDLE;
+                    end
+                    else if (kg_err_w) begin
+                        err_code_n = kg_err_code_w;
                         state_n    = CTRL_ERROR;
-                        err_code_n = CTRL_ERR_PRECONDITION;
-                    end
-                    else begin
-                        init_keygen_n = 1'b1;
-                        state_n       = CTRL_KG_DERIVE_ISSUE;
                     end
                 end
 
-                CTRL_KG_DERIVE_ISSUE: begin
-                    // G(d) / seed expansion hook. The HSU has SHA3-512 bypass,
-                    // but the seed-store split into rho/sigma still needs a
-                    // small top-level bridge. Until then, this state marks the
-                    // intended operation and uses RHO as the primary target.
-                    mem_phase_o      = CTRL_MEM_PHASE_HSU_SAMPLE;
-                    hsu_start_o      = 1'b1;
-                    hsu_mode_o       = MODE_HASH_SHA3_512;
-                    hsu_xof_len_o    = CTRL_XOF_LEN_64B;
-                    hsu_seed_id_o    = SEED_ID_RHO;
-                    hsu_input_sel_o  = HSU_IN_SEED;
-                    state_n          = CTRL_KG_DERIVE_WAIT;
-                end
 
-                CTRL_KG_DERIVE_WAIT: begin
-                    mem_phase_o   = CTRL_MEM_PHASE_HSU_SAMPLE;
-                    hsu_mode_o    = MODE_HASH_SHA3_512;
-                    hsu_seed_id_o = SEED_ID_RHO;
-
-                    if (hsu_done_i) begin
-                        state_n = CTRL_KG_SAMPLE_S_ISSUE;
-                    end
-                end
-
-                CTRL_KG_SAMPLE_S_ISSUE: begin
-                    mem_phase_o      = CTRL_MEM_PHASE_HSU_SAMPLE;
-                    hsu_start_o      = 1'b1;
-                    hsu_mode_o       = MODE_SAMPLE_CBD;
-                    hsu_xof_len_o    = CTRL_XOF_LEN_UNUSED;
-                    hsu_seed_id_o    = SEED_ID_SIGMA;
-                    hsu_poly_id_o    = s_poly_id(s_idx_r);
-                    hsu_input_sel_o  = HSU_IN_SEED;
-                    state_n          = CTRL_KG_SAMPLE_S_WAIT;
-                end
-
-                CTRL_KG_SAMPLE_S_WAIT: begin
-                    mem_phase_o   = CTRL_MEM_PHASE_HSU_SAMPLE;
-                    hsu_mode_o    = MODE_SAMPLE_CBD;
-                    hsu_seed_id_o = SEED_ID_SIGMA;
-                    hsu_poly_id_o = s_poly_id(s_idx_r);
-
-                    if (hsu_done_i) begin
-                        state_n = CTRL_KG_NTT_S_ISSUE;
-                    end
-                end
-
-                CTRL_KG_NTT_S_ISSUE: begin
-                    mem_phase_o                   = CTRL_MEM_PHASE_PAU;
-                    pau_start_o                   = 1'b1;
-                    pau_job_o.opcode              = PAU_JOB_NTT_IN_PLACE;
-                    pau_job_o.primary_poly_id     = s_poly_id(s_idx_r);
-                    pau_job_o.k_active            = k_active_r;
-                    state_n                       = CTRL_KG_NTT_S_WAIT;
-                end
-
-                CTRL_KG_NTT_S_WAIT: begin
-                    mem_phase_o               = CTRL_MEM_PHASE_PAU;
-                    pau_job_o.opcode          = PAU_JOB_NTT_IN_PLACE;
-                    pau_job_o.primary_poly_id = s_poly_id(s_idx_r);
-                    pau_job_o.k_active        = k_active_r;
-
-                    if (pau_done_i) begin
-                        state_n = CTRL_KG_NEXT_S;
-                    end
-                end
-
-                CTRL_KG_NEXT_S: begin
-                    if (s_idx_r == (k_active_r - 3'd1)) begin
-                        state_n = CTRL_KG_SAMPLE_E_ISSUE;
-                    end
-                    else begin
-                        inc_s_idx_n = 1'b1;
-                        state_n     = CTRL_KG_SAMPLE_S_ISSUE;
-                    end
-                end
-
-                CTRL_KG_SAMPLE_E_ISSUE: begin
-                    mem_phase_o      = CTRL_MEM_PHASE_HSU_SAMPLE;
-                    hsu_start_o      = 1'b1;
-                    hsu_mode_o       = MODE_SAMPLE_CBD;
-                    hsu_seed_id_o    = SEED_ID_SIGMA;
-                    hsu_poly_id_o    = CTRL_POLY_EI;
-                    hsu_input_sel_o  = HSU_IN_SEED;
-                    clear_col_idx_n  = 1'b1;
-                    state_n          = CTRL_KG_SAMPLE_E_WAIT;
-                end
-
-                CTRL_KG_SAMPLE_E_WAIT: begin
-                    mem_phase_o   = CTRL_MEM_PHASE_HSU_SAMPLE;
-                    hsu_mode_o    = MODE_SAMPLE_CBD;
-                    hsu_seed_id_o = SEED_ID_SIGMA;
-                    hsu_poly_id_o = CTRL_POLY_EI;
-
-                    if (hsu_done_i) begin
-                        state_n = CTRL_KG_SAMPLE_A_ISSUE;
-                    end
-                end
-
-                CTRL_KG_SAMPLE_A_ISSUE: begin
-                    mem_phase_o      = CTRL_MEM_PHASE_HSU_SAMPLE;
-                    hsu_start_o      = 1'b1;
-                    hsu_mode_o       = MODE_SAMPLE_NTT;
-                    hsu_seed_id_o    = SEED_ID_RHO;
-                    hsu_poly_id_o    = a_poly_id(col_idx_r);
-                    hsu_input_sel_o  = HSU_IN_SEED;
-                    state_n          = CTRL_KG_SAMPLE_A_WAIT;
-                end
-
-                CTRL_KG_SAMPLE_A_WAIT: begin
-                    mem_phase_o   = CTRL_MEM_PHASE_HSU_SAMPLE;
-                    hsu_mode_o    = MODE_SAMPLE_NTT;
-                    hsu_seed_id_o = SEED_ID_RHO;
-                    hsu_poly_id_o = a_poly_id(col_idx_r);
-
-                    if (hsu_done_i) begin
-                        state_n = CTRL_KG_NEXT_A_COL;
-                    end
-                end
-
-                CTRL_KG_NEXT_A_COL: begin
-                    if (col_idx_r == (k_active_r - 3'd1)) begin
-                        state_n = CTRL_KG_ROWMAC_ISSUE;
-                    end
-                    else begin
-                        inc_col_idx_n = 1'b1;
-                        state_n       = CTRL_KG_SAMPLE_A_ISSUE;
-                    end
-                end
-
-                CTRL_KG_ROWMAC_ISSUE: begin
-                    mem_phase_o                   = CTRL_MEM_PHASE_PAU;
-                    pau_start_o                   = 1'b1;
-                    pau_job_o.opcode              = PAU_JOB_KEYGEN_ROWMAC;
-                    pau_job_o.primary_poly_id     = t_poly_id(row_idx_r);
-                    pau_job_o.aux_poly_id         = CTRL_POLY_EI;
-                    pau_job_o.row_idx             = row_idx_r;
-                    pau_job_o.k_active            = k_active_r;
-                    state_n                       = CTRL_KG_ROWMAC_WAIT;
-                end
-
-                CTRL_KG_ROWMAC_WAIT: begin
-                    mem_phase_o               = CTRL_MEM_PHASE_PAU;
-                    pau_job_o.opcode          = PAU_JOB_KEYGEN_ROWMAC;
-                    pau_job_o.primary_poly_id = t_poly_id(row_idx_r);
-                    pau_job_o.aux_poly_id     = CTRL_POLY_EI;
-                    pau_job_o.row_idx         = row_idx_r;
-                    pau_job_o.k_active        = k_active_r;
-
-                    if (pau_done_i) begin
-                        state_n = CTRL_KG_NEXT_ROW;
-                    end
-                end
-
-                CTRL_KG_NEXT_ROW: begin
-                    if (row_idx_r == (k_active_r - 3'd1)) begin
-                        clear_hash_idx_n = 1'b1;
-                        state_n          = CTRL_KG_HASH_EK_START;
-                    end
-                    else begin
-                        inc_row_idx_n   = 1'b1;
-                        clear_col_idx_n = 1'b1;
-                        state_n         = CTRL_KG_SAMPLE_E_ISSUE;
-                    end
-                end
-
-                CTRL_KG_HASH_EK_START: begin
-                    mem_phase_o              = CTRL_MEM_PHASE_HSU_HASH_EK;
-                    hsu_hash_ek_read_en_o    = 1'b1;
-                    hsu_start_o              = 1'b1;
-                    hsu_mode_o               = MODE_ABSORB_POLY;
-                    hsu_xof_len_o            = CTRL_XOF_LEN_32B;
-                    hsu_seed_id_o            = SEED_ID_HEK;
-                    hsu_input_sel_o          = HSU_IN_POLY;
-                    state_n                  = CTRL_KG_HASH_EK_ABSORB_T;
-                end
-
-                CTRL_KG_HASH_EK_ABSORB_T: begin
-                    mem_phase_o              = CTRL_MEM_PHASE_HSU_HASH_EK;
-                    hsu_hash_ek_read_en_o    = 1'b1;
-                    hsu_mode_o               = MODE_ABSORB_POLY;
-                    hsu_seed_id_o            = SEED_ID_HEK;
-                    hsu_poly_id_o            = t_poly_id(hash_idx_r);
-                    hsu_input_sel_o          = HSU_IN_POLY;
-                    hsu_absorb_poly_o        = 1'b1;
-                    hsu_absorb_last_o        = (hash_idx_r == (k_active_r - 3'd1));
-                    state_n                  = CTRL_KG_HASH_EK_WAIT_T;
-                end
-
-                CTRL_KG_HASH_EK_WAIT_T: begin
-                    mem_phase_o              = CTRL_MEM_PHASE_HSU_HASH_EK;
-                    hsu_hash_ek_read_en_o    = 1'b1;
-                    hsu_mode_o               = MODE_ABSORB_POLY;
-                    hsu_seed_id_o            = SEED_ID_HEK;
-                    hsu_poly_id_o            = t_poly_id(hash_idx_r);
-                    hsu_input_sel_o          = HSU_IN_POLY;
-                    hsu_absorb_last_o        = (hash_idx_r == (k_active_r - 3'd1));
-
-                    if (hsu_packer_done_i) begin
-                        state_n = CTRL_KG_HASH_EK_NEXT_T;
-                    end
-                end
-
-                CTRL_KG_HASH_EK_NEXT_T: begin
-                    if (hash_idx_r == (k_active_r - 3'd1)) begin
-                        state_n = CTRL_KG_HASH_EK_WAIT_DONE;
-                    end
-                    else begin
-                        inc_hash_idx_n = 1'b1;
-                        state_n        = CTRL_KG_HASH_EK_ABSORB_T;
-                    end
-                end
-
-                CTRL_KG_HASH_EK_WAIT_DONE: begin
-                    mem_phase_o           = CTRL_MEM_PHASE_HSU_HASH_EK;
-                    hsu_hash_ek_read_en_o = 1'b1;
-                    hsu_mode_o            = MODE_ABSORB_POLY;
-                    hsu_seed_id_o         = SEED_ID_HEK;
-                    // TODO(KeyGen): append rho to H(ek) once the HSU seed
-                    // input request path is exposed cleanly to the controller.
-                    if (hsu_done_i) begin
-                        state_n = CTRL_KG_DONE;
-                    end
-                end
-
-                CTRL_KG_DONE: begin
-                    set_keygen_valid_n = 1'b1;
-                    done_pulse_n       = 1'b1;
-                    state_n            = CTRL_IDLE;
-                end
 
                 CTRL_UNSUPPORTED: begin
                     state_n    = CTRL_ERROR;
@@ -820,7 +573,14 @@ module core_control_unit (
                     mem_phase_o         = CTRL_MEM_PHASE_ZEROIZE;
                     mem_zeroize_req_o   = 1'b1;
                     clear_protocol_n    = 1'b1;
-                    state_n             = CTRL_ZEROIZE_WAIT;
+                    if (mem_zeroize_done_i) begin
+                        // Memory wipe completed immediately (e.g. single-cycle stub).
+                        done_pulse_n = 1'b1;
+                        state_n      = CTRL_IDLE;
+                    end
+                    else begin
+                        state_n = CTRL_ZEROIZE_WAIT;
+                    end
                 end
 
                 CTRL_ZEROIZE_WAIT: begin
@@ -870,12 +630,6 @@ module core_control_unit (
             dk_valid_r  <= 1'b0;
             hek_valid_r <= 1'b0;
             ss_valid_r  <= 1'b0;
-
-            k_active_r <= 3'd0;
-            s_idx_r    <= 3'd0;
-            row_idx_r  <= 3'd0;
-            col_idx_r  <= 3'd0;
-            hash_idx_r <= 3'd0;
 
             active_tr_opcode_r <= TR_OP_IDLE;
 
@@ -928,27 +682,50 @@ module core_control_unit (
                 end
             end
 
-            if (init_keygen_n) begin
-                k_active_r <= cmd_k_w;
-                s_idx_r    <= 3'd0;
-                row_idx_r  <= 3'd0;
-                col_idx_r  <= 3'd0;
-                hash_idx_r <= 3'd0;
-            end
-            else begin
-                if (inc_s_idx_n)    s_idx_r    <= s_idx_r + 3'd1;
-                if (inc_row_idx_n)  row_idx_r  <= row_idx_r + 3'd1;
-                if (inc_col_idx_n)  col_idx_r  <= col_idx_r + 3'd1;
-                if (inc_hash_idx_n) hash_idx_r <= hash_idx_r + 3'd1;
-
-                if (clear_col_idx_n)  col_idx_r  <= 3'd0;
-                if (clear_hash_idx_n) hash_idx_r <= 3'd0;
-            end
+            // Loop counters are now owned by kg_fsm.
         end
     end
 
     assign sts_busy_o     = (state_r != CTRL_IDLE);
     assign sts_done_o     = done_pulse_r;
     assign sts_err_code_o = err_code_r;
+
+    // ------------------------------------------------------------------
+    // kg_fsm instantiation
+    // ------------------------------------------------------------------
+    kg_fsm u_kg_fsm (
+        .clk                    (clk),
+        .rst_n                  (rst_n),
+        // Control
+        .kg_start_i             (kg_start_w),
+        .kg_abort_i             (kg_abort_w),
+        .d_loaded_i             (d_loaded_r),
+        .cmd_sec_lvl_i          (cmd_sec_lvl_lat_r),
+        // Done strobes from sub-units
+        .hsu_done_i             (hsu_done_i),
+        .hsu_packer_done_i      (hsu_packer_done_i),
+        .pau_done_i             (pau_done_i),
+        // Status
+        .kg_active_o            (kg_active_w),
+        .kg_done_o              (kg_done_w),
+        .kg_err_o               (kg_err_w),
+        .kg_err_code_o          (kg_err_code_w),
+        // HSU outputs
+        .hsu_start_o            (kg_hsu_start_w),
+        .hsu_mode_o             (kg_hsu_mode_w),
+        .hsu_xof_len_o          (kg_hsu_xof_len_w),
+        .hsu_is_eta3_o          (kg_hsu_is_eta3_w),
+        .hsu_poly_id_o          (kg_hsu_poly_id_w),
+        .hsu_seed_id_o          (kg_hsu_seed_id_w),
+        .hsu_input_sel_o        (kg_hsu_input_sel_w),
+        .hsu_absorb_poly_o      (kg_hsu_absorb_poly_w),
+        .hsu_absorb_last_o      (kg_hsu_absorb_last_w),
+        .hsu_hash_ek_read_en_o  (kg_hsu_hash_ek_read_en_w),
+        // PAU outputs
+        .pau_start_o            (kg_pau_start_w),
+        .pau_job_o              (kg_pau_job_w),
+        // Memory phase
+        .mem_phase_o            (kg_mem_phase_w)
+    );
 
 endmodule
