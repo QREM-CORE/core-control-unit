@@ -5,9 +5,10 @@
  *
  * Reference: QREM Architecture Specification
  *
- * Description: Top-level wrapper for the control subsystem.
- * Instantiates the host interface (CSRs) and the main protocol FSM.
- * Acts as the primary orchestrator for the Hash, PAU, Transcoder, and Memory.
+ * Description:
+ * Legacy placeholder. The macro-sequencer now lives directly in
+ * core_control_unit.sv. Reintroduce this module only if there is a real,
+ * documented split between an outer controller and an inner protocol FSM.
  */
 
 import core_ctrl_pkg::*;
@@ -15,6 +16,11 @@ import core_ctrl_pkg::*;
 module main_fsm (
     input logic clk,
     input logic rst_n
-    // TODO: Add control interfaces
 );
+    // Intentionally empty.
+    logic unused_clk;
+    logic unused_rst_n;
+
+    assign unused_clk   = clk;
+    assign unused_rst_n = rst_n;
 endmodule
