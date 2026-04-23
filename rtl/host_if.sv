@@ -250,6 +250,19 @@ module host_if (
     logic        busy_w;
     logic        rx_hs_w;
     logic        tx_hs_w;
+    logic        write_commit_w;
+    logic        control_write_w;
+    logic        command_write_w;
+    logic        status_write_w;
+    logic        zeroize_req_w;
+    logic        start_req_w;
+    logic        status_done_w1c_w;
+    logic        status_err_w1c_w;
+    logic        skip_phase_update_w;
+    logic [31:0] control_wr_img_w;
+    logic [31:0] command_wr_img_w;
+    logic [15:0] rx_next_bytes_w;
+    logic [15:0] tx_next_bytes_w;
 
     assign seed_d_o = 256'h0;
     assign seed_z_o = 256'h0;
@@ -290,6 +303,33 @@ module host_if (
     assign rx_hs_w = s_axis_rx_tvalid && s_axis_rx_tready;
     assign tx_hs_w = tc_tx_tvalid_i   && tc_tx_tready_o;
 
+    assign write_commit_w  = aw_buf_valid_r && w_buf_valid_r && !s_axi_bvalid;
+    assign control_write_w = write_commit_w && (aw_buf_addr_r == ADDR_CONTROL);
+    assign command_write_w = write_commit_w && (aw_buf_addr_r == ADDR_COMMAND);
+    assign status_write_w  = write_commit_w && (aw_buf_addr_r == ADDR_STATUS);
+
+    assign zeroize_req_w = control_write_w &&
+                           w_buf_strb_r[0] &&
+                           w_buf_data_r[CTRL_ZEROIZE_BIT];
+
+    assign start_req_w = control_write_w &&
+                         !zeroize_req_w &&
+                         w_buf_strb_r[0] &&
+                         w_buf_data_r[CTRL_START_BIT];
+
+    assign status_done_w1c_w = status_write_w &&
+                               w_buf_strb_r[0] &&
+                               w_buf_data_r[STS_DONE_BIT];
+
+    assign status_err_w1c_w = status_write_w &&
+                              w_buf_strb_r[0] &&
+                              w_buf_data_r[STS_ERR_BIT];
+
+    assign skip_phase_update_w = zeroize_req_w || start_req_w;
+
+    assign rx_next_bytes_w = rx_bytes_r + 16'd8;
+    assign tx_next_bytes_w = tx_bytes_r + 16'd8;
+
     // Simple AXI4-Lite single-beat access. This wrapper does not implement
     // bursts or multiple outstanding responses.
     assign s_axi_awready = !aw_buf_valid_r && !s_axi_bvalid;
@@ -322,6 +362,36 @@ module host_if (
             valid_sec_lvl = (sec_lvl == SEC_512)  ||
                             (sec_lvl == SEC_768)  ||
                             (sec_lvl == SEC_1024);
+        end
+    endfunction
+
+    function automatic logic [31:0] control_reg_image (
+        input logic irq_done_en,
+        input logic irq_err_en
+    );
+        logic [31:0] img;
+        begin
+            img = 32'h0000_0000;
+            img[CTRL_IRQ_DONE_EN_BIT] = irq_done_en;
+            img[CTRL_IRQ_ERR_EN_BIT]  = irq_err_en;
+            control_reg_image = img;
+        end
+    endfunction
+
+    function automatic logic [31:0] command_reg_image (
+        input logic [3:0] opcode,
+        input logic [3:0] mode,
+        input logic [1:0] sec_lvl,
+        input logic [4:0] payload_id
+    );
+        logic [31:0] img;
+        begin
+            img = 32'h0000_0000;
+            img[3:0]   = opcode;
+            img[7:4]   = mode;
+            img[9:8]   = sec_lvl;
+            img[14:10] = payload_id;
+            command_reg_image = img;
         end
     endfunction
 
@@ -425,6 +495,16 @@ module host_if (
     endfunction
 
     assign live_decoded_xfer_len_w = decode_xfer_len(csr_sec_lvl_r, csr_payload_id_r);
+    assign control_wr_img_w = apply_wstrb(
+        control_reg_image(irq_done_en_r, irq_err_en_r),
+        w_buf_data_r,
+        w_buf_strb_r
+    );
+    assign command_wr_img_w = apply_wstrb(
+        command_reg_image(csr_opcode_r, csr_mode_r, csr_sec_lvl_r, csr_payload_id_r),
+        w_buf_data_r,
+        w_buf_strb_r
+    );
 
     function automatic logic [31:0] csr_read_data (
         input logic [7:0] addr
@@ -583,16 +663,6 @@ module host_if (
             tx_bytes_r      <= 16'd0;
         end
         else begin
-            logic        skip_phase_update;
-            logic        err_clear_this_cycle;
-            logic [31:0] reg_img;
-            logic [15:0] next_bytes;
-
-            skip_phase_update = 1'b0;
-            err_clear_this_cycle = 1'b0;
-            reg_img           = 32'h0000_0000;
-            next_bytes        = 16'd0;
-
             // Default one-cycle pulse behavior.
             zeroize_pulse_r <= 1'b0;
 
@@ -611,54 +681,39 @@ module host_if (
             end
 
             // Commit when both buffered halves of the write are available.
-            if (aw_buf_valid_r && w_buf_valid_r && !s_axi_bvalid) begin
+            if (write_commit_w) begin
                 unique case (aw_buf_addr_r)
                     ADDR_CONTROL: begin
-                        reg_img = 32'h0000_0000;
-                        reg_img[CTRL_IRQ_DONE_EN_BIT] = irq_done_en_r;
-                        reg_img[CTRL_IRQ_ERR_EN_BIT]  = irq_err_en_r;
-                        reg_img = apply_wstrb(reg_img, w_buf_data_r, w_buf_strb_r);
-
-                        irq_done_en_r <= reg_img[CTRL_IRQ_DONE_EN_BIT];
-                        irq_err_en_r  <= reg_img[CTRL_IRQ_ERR_EN_BIT];
+                        irq_done_en_r <= control_wr_img_w[CTRL_IRQ_DONE_EN_BIT];
+                        irq_err_en_r  <= control_wr_img_w[CTRL_IRQ_ERR_EN_BIT];
 
                         // ZEROIZE has priority over START. It aborts only
                         // local host_if state and emits a pulse requesting the
                         // rest of the system to purge sensitive state.
-                        if (w_buf_strb_r[0] && w_buf_data_r[CTRL_ZEROIZE_BIT]) begin
+                        if (zeroize_req_w) begin
                             clear_active_command();
                             zeroize_pulse_r   <= 1'b1;
-                            skip_phase_update = 1'b1;
                         end
-                        else if (w_buf_strb_r[0] && w_buf_data_r[CTRL_START_BIT]) begin
+                        else if (start_req_w) begin
                             launch_command(1'b0);
-                            skip_phase_update = 1'b1;
                         end
                     end
 
                     ADDR_COMMAND: begin
-                        reg_img = 32'h0000_0000;
-                        reg_img[3:0]   = csr_opcode_r;
-                        reg_img[7:4]   = csr_mode_r;
-                        reg_img[9:8]   = csr_sec_lvl_r;
-                        reg_img[14:10] = csr_payload_id_r;
-                        reg_img = apply_wstrb(reg_img, w_buf_data_r, w_buf_strb_r);
-
-                        csr_opcode_r     <= reg_img[3:0];
-                        csr_mode_r       <= reg_img[7:4];
-                        csr_sec_lvl_r    <= reg_img[9:8];
-                        csr_payload_id_r <= reg_img[14:10];
+                        csr_opcode_r     <= command_wr_img_w[3:0];
+                        csr_mode_r       <= command_wr_img_w[7:4];
+                        csr_sec_lvl_r    <= command_wr_img_w[9:8];
+                        csr_payload_id_r <= command_wr_img_w[14:10];
                     end
 
                     ADDR_STATUS: begin
                         // W1C: writing 1 clears the selected sticky bit.
-                        if (w_buf_strb_r[0] && w_buf_data_r[STS_DONE_BIT]) begin
+                        if (status_done_w1c_w) begin
                             done_sticky_r <= 1'b0;
                         end
-                        if (w_buf_strb_r[0] && w_buf_data_r[STS_ERR_BIT]) begin
+                        if (status_err_w1c_w) begin
                             err_sticky_r <= 1'b0;
                             err_code_r   <= ERR_NONE;
-                            err_clear_this_cycle = 1'b1;
                         end
                     end
 
@@ -693,9 +748,9 @@ module host_if (
             // ----------------------------------------------------
             // Controller Error and Local Phase Control
             // ----------------------------------------------------
-            if (!skip_phase_update) begin
+            if (!skip_phase_update_w) begin
                 if (sts_err_code_i != ERR_NONE) begin
-                    raise_error(sts_err_code_i, err_clear_this_cycle);
+                    raise_error(sts_err_code_i, status_err_w1c_w);
                 end
                 else begin
                     unique case (phase_r)
@@ -711,34 +766,32 @@ module host_if (
                                     CMD_LOAD:  phase_r <= PH_RX;
                                     CMD_STORE: phase_r <= PH_TX;
                                     CMD_START: phase_r <= PH_WAIT_DONE;
-                                    default:   raise_error(ERR_ILLEGAL_CMD, err_clear_this_cycle);
+                                    default:   raise_error(ERR_ILLEGAL_CMD, status_err_w1c_w);
                                 endcase
                             end
                         end
 
                         PH_RX: begin
                             if (rx_hs_w) begin
-                                next_bytes = rx_bytes_r + 16'd8;
-
                                 // Since there is no TKEEP, every accepted
                                 // stream beat is exactly 8 bytes.
-                                if (next_bytes > cmd_xfer_len_lat_r) begin
-                                    raise_error(ERR_RX_OVERRUN, err_clear_this_cycle);
+                                if (rx_next_bytes_w > cmd_xfer_len_lat_r) begin
+                                    raise_error(ERR_RX_OVERRUN, status_err_w1c_w);
                                 end
-                                else if (s_axis_rx_tlast && (next_bytes != cmd_xfer_len_lat_r)) begin
-                                    raise_error(ERR_RX_EARLY_TLAST, err_clear_this_cycle);
+                                else if (s_axis_rx_tlast && (rx_next_bytes_w != cmd_xfer_len_lat_r)) begin
+                                    raise_error(ERR_RX_EARLY_TLAST, status_err_w1c_w);
                                 end
-                                else if (!s_axis_rx_tlast && (next_bytes == cmd_xfer_len_lat_r)) begin
-                                    raise_error(ERR_RX_MISSING_TLAST, err_clear_this_cycle);
+                                else if (!s_axis_rx_tlast && (rx_next_bytes_w == cmd_xfer_len_lat_r)) begin
+                                    raise_error(ERR_RX_MISSING_TLAST, status_err_w1c_w);
                                 end
                                 else begin
-                                    rx_bytes_r <= next_bytes;
+                                    rx_bytes_r <= rx_next_bytes_w;
 
                                     // LOAD completes locally when the expected
                                     // byte count arrives and the final beat has
                                     // TLAST. The controller may then use the
                                     // loaded payload in later macro-sequences.
-                                    if (s_axis_rx_tlast && (next_bytes == cmd_xfer_len_lat_r)) begin
+                                    if (s_axis_rx_tlast && (rx_next_bytes_w == cmd_xfer_len_lat_r)) begin
                                         clear_active_command();
                                         done_sticky_r <= 1'b1;
                                     end
@@ -748,24 +801,22 @@ module host_if (
 
                         PH_TX: begin
                             if (tx_hs_w) begin
-                                next_bytes = tx_bytes_r + 16'd8;
-
-                                if (next_bytes > cmd_xfer_len_lat_r) begin
-                                    raise_error(ERR_TX_OVERRUN, err_clear_this_cycle);
+                                if (tx_next_bytes_w > cmd_xfer_len_lat_r) begin
+                                    raise_error(ERR_TX_OVERRUN, status_err_w1c_w);
                                 end
-                                else if (tc_tx_tlast_i && (next_bytes != cmd_xfer_len_lat_r)) begin
-                                    raise_error(ERR_TX_EARLY_TLAST, err_clear_this_cycle);
+                                else if (tc_tx_tlast_i && (tx_next_bytes_w != cmd_xfer_len_lat_r)) begin
+                                    raise_error(ERR_TX_EARLY_TLAST, status_err_w1c_w);
                                 end
-                                else if (!tc_tx_tlast_i && (next_bytes == cmd_xfer_len_lat_r)) begin
-                                    raise_error(ERR_TX_MISSING_TLAST, err_clear_this_cycle);
+                                else if (!tc_tx_tlast_i && (tx_next_bytes_w == cmd_xfer_len_lat_r)) begin
+                                    raise_error(ERR_TX_MISSING_TLAST, status_err_w1c_w);
                                 end
                                 else begin
-                                    tx_bytes_r <= next_bytes;
+                                    tx_bytes_r <= tx_next_bytes_w;
 
                                     // STORE completes locally when host_if has
                                     // forwarded the expected number of bytes
                                     // and the transcoder marks the final beat.
-                                    if (tc_tx_tlast_i && (next_bytes == cmd_xfer_len_lat_r)) begin
+                                    if (tc_tx_tlast_i && (tx_next_bytes_w == cmd_xfer_len_lat_r)) begin
                                         clear_active_command();
                                         done_sticky_r <= 1'b1;
                                     end
