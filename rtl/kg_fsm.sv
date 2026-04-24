@@ -68,6 +68,9 @@ module kg_fsm (
     output logic [1:0]                  hsu_input_sel_o,
     output logic                        hsu_absorb_poly_o,
     output logic                        hsu_absorb_last_o,
+    output logic [7:0]                  hsu_row_o,
+    output logic [7:0]                  hsu_col_o,
+    output logic [7:0]                  hsu_cbd_n_o,
     output logic                        hsu_hash_ek_read_en_o,
 
     // ------------------------------------------------------------------
@@ -214,6 +217,9 @@ module kg_fsm (
         hsu_input_sel_o       = HSU_IN_SEED;
         hsu_absorb_poly_o     = 1'b0;
         hsu_absorb_last_o     = 1'b0;
+        hsu_row_o             = 8'h00;
+        hsu_col_o             = 8'h00;
+        hsu_cbd_n_o           = 8'h00;
         hsu_hash_ek_read_en_o = 1'b0;
 
         pau_start_o = 1'b0;
@@ -272,6 +278,7 @@ module kg_fsm (
                     hsu_xof_len_o   = CTRL_XOF_LEN_UNUSED;
                     hsu_seed_id_o   = SEED_ID_SIGMA;
                     hsu_poly_id_o   = s_poly_id(s_idx_r);
+                    hsu_cbd_n_o     = {5'b0, s_idx_r};
                     hsu_input_sel_o = HSU_IN_SEED;
                     state_n         = KG_SAMPLE_S_WAIT;
                 end
@@ -281,6 +288,7 @@ module kg_fsm (
                     hsu_mode_o    = MODE_SAMPLE_CBD;
                     hsu_seed_id_o = SEED_ID_SIGMA;
                     hsu_poly_id_o = s_poly_id(s_idx_r);
+                    hsu_cbd_n_o   = {5'b0, s_idx_r};
                     if (hsu_done_i) begin
                         state_n = KG_NTT_S_ISSUE;
                     end
@@ -321,6 +329,7 @@ module kg_fsm (
                     hsu_mode_o      = MODE_SAMPLE_CBD;
                     hsu_seed_id_o   = SEED_ID_SIGMA;
                     hsu_poly_id_o   = CTRL_POLY_EI;
+                    hsu_cbd_n_o     = {5'b0, (k_active_r + row_idx_r)};
                     hsu_input_sel_o = HSU_IN_SEED;
                     clear_col_idx_n = 1'b1;
                     state_n         = KG_SAMPLE_E_WAIT;
@@ -331,6 +340,7 @@ module kg_fsm (
                     hsu_mode_o    = MODE_SAMPLE_CBD;
                     hsu_seed_id_o = SEED_ID_SIGMA;
                     hsu_poly_id_o = CTRL_POLY_EI;
+                    hsu_cbd_n_o   = {5'b0, (k_active_r + row_idx_r)};
                     if (hsu_done_i) begin
                         // Locked KeyGen requires e_i to be transformed into NTT
                         // form (e_hat_i) before row-mac. Keep this explicit so
@@ -364,6 +374,8 @@ module kg_fsm (
                     hsu_mode_o      = MODE_SAMPLE_NTT;
                     hsu_seed_id_o   = SEED_ID_RHO;
                     hsu_poly_id_o   = a_poly_id(col_idx_r);
+                    hsu_row_o       = {5'b0, row_idx_r};
+                    hsu_col_o       = {5'b0, col_idx_r};
                     hsu_input_sel_o = HSU_IN_SEED;
                     state_n         = KG_SAMPLE_A_WAIT;
                 end
@@ -373,6 +385,8 @@ module kg_fsm (
                     hsu_mode_o    = MODE_SAMPLE_NTT;
                     hsu_seed_id_o = SEED_ID_RHO;
                     hsu_poly_id_o = a_poly_id(col_idx_r);
+                    hsu_row_o     = {5'b0, row_idx_r};
+                    hsu_col_o     = {5'b0, col_idx_r};
                     if (hsu_done_i) begin
                         state_n = KG_NEXT_A_COL;
                     end
