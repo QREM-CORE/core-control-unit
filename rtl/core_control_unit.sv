@@ -67,6 +67,9 @@ module core_control_unit (
     output logic [1:0]                   hsu_input_sel_o,
     output logic                         hsu_absorb_poly_o,
     output logic                         hsu_absorb_last_o,
+    output logic [7:0]                   hsu_row_o,
+    output logic [7:0]                   hsu_col_o,
+    output logic [7:0]                   hsu_cbd_n_o,
     input  logic                         hsu_done_i,
     input  logic                         hsu_packer_done_i,
     input  logic [3:0]                   hsu_err_i,
@@ -93,7 +96,10 @@ module core_control_unit (
 
     // Coarse access phase. This is not an arbiter grant; it is a controller
     // intent/debug sideband for later top-level memory-adapter hookup.
-    output ctrl_mem_phase_t              mem_phase_o
+    output ctrl_mem_phase_t              mem_phase_o,
+
+    // Stable datapath-visible copy of the currently active security level.
+    output logic [1:0]                   active_sec_lvl_o
 );
 
     // ---------------------------------------------------------------------
@@ -192,6 +198,9 @@ module core_control_unit (
     logic [1:0]                kg_hsu_input_sel_w;
     logic                      kg_hsu_absorb_poly_w;
     logic                      kg_hsu_absorb_last_w;
+    logic [7:0]                kg_hsu_row_w;
+    logic [7:0]                kg_hsu_col_w;
+    logic [7:0]                kg_hsu_cbd_n_w;
     logic                      kg_hsu_hash_ek_read_en_w;
     logic                      kg_pau_start_w;
     ctrl_pau_job_t             kg_pau_job_w;
@@ -362,6 +371,9 @@ module core_control_unit (
         hsu_input_sel_o       = HSU_IN_SEED;
         hsu_absorb_poly_o     = 1'b0;
         hsu_absorb_last_o     = 1'b0;
+        hsu_row_o             = 8'h00;
+        hsu_col_o             = 8'h00;
+        hsu_cbd_n_o           = 8'h00;
         hsu_hash_ek_read_en_o = 1'b0;
 
         pau_start_o = 1'b0;
@@ -585,6 +597,9 @@ module core_control_unit (
                     hsu_input_sel_o       = kg_hsu_input_sel_w;
                     hsu_absorb_poly_o     = kg_hsu_absorb_poly_w;
                     hsu_absorb_last_o     = kg_hsu_absorb_last_w;
+                    hsu_row_o             = kg_hsu_row_w;
+                    hsu_col_o             = kg_hsu_col_w;
+                    hsu_cbd_n_o           = kg_hsu_cbd_n_w;
                     hsu_hash_ek_read_en_o = kg_hsu_hash_ek_read_en_w;
                     pau_start_o           = kg_pau_start_w;
                     pau_job_o             = kg_pau_job_w;
@@ -736,6 +751,7 @@ module core_control_unit (
     assign sts_busy_o     = (state_r != CTRL_IDLE);
     assign sts_done_o     = done_pulse_r;
     assign sts_err_code_o = err_code_r;
+    assign active_sec_lvl_o = cmd_sec_lvl_lat_r;
 
     // ------------------------------------------------------------------
     // kg_fsm instantiation
@@ -767,6 +783,9 @@ module core_control_unit (
         .hsu_input_sel_o        (kg_hsu_input_sel_w),
         .hsu_absorb_poly_o      (kg_hsu_absorb_poly_w),
         .hsu_absorb_last_o      (kg_hsu_absorb_last_w),
+        .hsu_row_o              (kg_hsu_row_w),
+        .hsu_col_o              (kg_hsu_col_w),
+        .hsu_cbd_n_o            (kg_hsu_cbd_n_w),
         .hsu_hash_ek_read_en_o  (kg_hsu_hash_ek_read_en_w),
         // PAU outputs
         .pau_start_o            (kg_pau_start_w),

@@ -34,6 +34,9 @@ module core_control_unit_tb;
     logic [1:0]                hsu_input_sel_o;
     logic                      hsu_absorb_poly_o;
     logic                      hsu_absorb_last_o;
+    logic [7:0]                hsu_row_o;
+    logic [7:0]                hsu_col_o;
+    logic [7:0]                hsu_cbd_n_o;
     logic                      hsu_done_i;
     logic                      hsu_packer_done_i;
     logic [3:0]                hsu_err_i;
@@ -49,6 +52,7 @@ module core_control_unit_tb;
     logic [2:0]      mem_fault_code_i;
     logic            hsu_hash_ek_read_en_o;
     ctrl_mem_phase_t mem_phase_o;
+    logic [1:0]      active_sec_lvl_o;
 
     int errors;
 
@@ -291,36 +295,49 @@ module core_control_unit_tb;
             send_cmd(CMD_START, MODE_KEYGEN, SEC_512, PLD_NONE);
 
             expect_hsu_start(MODE_HASH_SHA3_512, '0, SEED_ID_RHO);
+            check(active_sec_lvl_o == SEC_512, "latched security level should follow accepted KeyGen command");
             finish_hsu();
 
             expect_hsu_start(MODE_SAMPLE_CBD, CTRL_POLY_S_BASE + POLY_ID_WIDTH'(0), SEED_ID_SIGMA);
+            check(hsu_cbd_n_o == 8'd0, "s_0 sample should use CBD nonce 0");
             finish_hsu();
             expect_pau_start(PAU_JOB_NTT_IN_PLACE, CTRL_POLY_S_BASE + POLY_ID_WIDTH'(0), 3'd0);
             finish_pau();
 
             expect_hsu_start(MODE_SAMPLE_CBD, CTRL_POLY_S_BASE + POLY_ID_WIDTH'(1), SEED_ID_SIGMA);
+            check(hsu_cbd_n_o == 8'd1, "s_1 sample should use CBD nonce 1");
             finish_hsu();
             expect_pau_start(PAU_JOB_NTT_IN_PLACE, CTRL_POLY_S_BASE + POLY_ID_WIDTH'(1), 3'd0);
             finish_pau();
 
             expect_hsu_start(MODE_SAMPLE_CBD, CTRL_POLY_EI, SEED_ID_SIGMA);
+            check(hsu_cbd_n_o == 8'd2, "e_0 sample should use CBD nonce k+0");
             finish_hsu();
             expect_pau_start(PAU_JOB_NTT_IN_PLACE, CTRL_POLY_EI, 3'd0);
             finish_pau();
             expect_hsu_start(MODE_SAMPLE_NTT, CTRL_POLY_A_BASE + POLY_ID_WIDTH'(0), SEED_ID_RHO);
+            check(hsu_row_o == 8'd0, "A_hat row 0 sample should drive row 0");
+            check(hsu_col_o == 8'd0, "A_hat(0,0) sample should drive col 0");
             finish_hsu();
             expect_hsu_start(MODE_SAMPLE_NTT, CTRL_POLY_A_BASE + POLY_ID_WIDTH'(1), SEED_ID_RHO);
+            check(hsu_row_o == 8'd0, "A_hat row 0 sample should hold row 0");
+            check(hsu_col_o == 8'd1, "A_hat(0,1) sample should drive col 1");
             finish_hsu();
             expect_pau_start(PAU_JOB_KEYGEN_ROWMAC, CTRL_POLY_T_BASE + POLY_ID_WIDTH'(0), 3'd0);
             finish_pau();
 
             expect_hsu_start(MODE_SAMPLE_CBD, CTRL_POLY_EI, SEED_ID_SIGMA);
+            check(hsu_cbd_n_o == 8'd3, "e_1 sample should use CBD nonce k+1");
             finish_hsu();
             expect_pau_start(PAU_JOB_NTT_IN_PLACE, CTRL_POLY_EI, 3'd0);
             finish_pau();
             expect_hsu_start(MODE_SAMPLE_NTT, CTRL_POLY_A_BASE + POLY_ID_WIDTH'(0), SEED_ID_RHO);
+            check(hsu_row_o == 8'd1, "A_hat row 1 sample should drive row 1");
+            check(hsu_col_o == 8'd0, "A_hat(1,0) sample should drive col 0");
             finish_hsu();
             expect_hsu_start(MODE_SAMPLE_NTT, CTRL_POLY_A_BASE + POLY_ID_WIDTH'(1), SEED_ID_RHO);
+            check(hsu_row_o == 8'd1, "A_hat row 1 sample should hold row 1");
+            check(hsu_col_o == 8'd1, "A_hat(1,1) sample should drive col 1");
             finish_hsu();
             expect_pau_start(PAU_JOB_KEYGEN_ROWMAC, CTRL_POLY_T_BASE + POLY_ID_WIDTH'(1), 3'd1);
             finish_pau();
