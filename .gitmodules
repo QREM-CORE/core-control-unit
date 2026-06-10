@@ -6,4 +6,4 @@
 	url = ../build-tools.git
 [submodule "qrem-docs"]
 	path = qrem-docs
-	url = git@github.com:QREM-CORE/qrem-docs.git
+	url = ../qrem-docs.git
