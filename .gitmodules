@@ -4,3 +4,6 @@
 [submodule "build-tools"]
 	path = build-tools
 	url = ../build-tools.git
+[submodule "qrem-docs"]
+	path = qrem-docs
+	url = ../qrem-docs.git
