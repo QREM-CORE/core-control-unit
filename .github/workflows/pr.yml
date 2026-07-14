@@ -29,3 +29,4 @@ jobs:
       enable_lint: true
       enable_verilator: true
       enable_vsim: true
+      enable_sv2v: true
